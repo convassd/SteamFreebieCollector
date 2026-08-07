@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: steam-freebie-collector
+Version: 0.1.0
+Summary: Safely collect Keylol Steam giveaway licenses through ASF IPC
+Requires-Python: >=3.12
+Requires-Dist: beautifulsoup4<5,>=4.12
+Requires-Dist: requests<3,>=2.32
+Provides-Extra: test
+Requires-Dist: pytest<9,>=8.3; extra == "test"

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steam-freebie-collector"
+version = "0.1.0"
+description = "Safely collect Keylol Steam giveaway licenses through ASF IPC"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.12,<5",
+    "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.3,<9"]
+
+[project.scripts]
+steam-freebie-collector = "steam_freebie_collector.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["steam_freebie_collector*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+

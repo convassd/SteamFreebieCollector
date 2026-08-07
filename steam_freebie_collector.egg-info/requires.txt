@@ -1,0 +1,5 @@
+beautifulsoup4<5,>=4.12
+requests<3,>=2.32
+
+[test]
+pytest<9,>=8.3

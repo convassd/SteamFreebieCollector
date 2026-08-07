@@ -1,0 +1,15 @@
+[keylol]
+index_url = "https://keylol.com/t572814-1-1"
+connect_timeout_seconds = 10.0
+read_timeout_seconds = 30.0
+get_retry_count = 3
+
+[asf]
+base_url = "http://localhost:1242"
+health_wait_seconds = 120.0
+health_poll_seconds = 2.0
+
+[storage]
+database = "data/collector.sqlite3"
+logs = "logs"
+
