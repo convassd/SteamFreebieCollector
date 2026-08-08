@@ -41,7 +41,7 @@ $Principal = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interact
 
 $AsfAction = New-ScheduledTaskAction -Execute $AsfExe -WorkingDirectory $AsfRoot
 $AsfLogonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
-$AsfDailyTrigger = New-ScheduledTaskTrigger -Daily -At '08:55'
+$AsfDailyTrigger = New-ScheduledTaskTrigger -Daily -At '20:55'
 $AsfSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
@@ -52,7 +52,7 @@ $AsfSettings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 $AsfTask = New-ScheduledTask -Action $AsfAction -Trigger @($AsfLogonTrigger, $AsfDailyTrigger) -Principal $Principal -Settings $AsfSettings `
-    -Description 'Start ArchiSteamFarm at Windows logon and daily before SteamFreebieCollector.'
+    -Description 'Start ArchiSteamFarm at Windows logon and daily at 20:55 before SteamFreebieCollector.'
 
 $CollectorAction = New-ScheduledTaskAction `
     -Execute $PythonExe `
@@ -60,7 +60,7 @@ $CollectorAction = New-ScheduledTaskAction `
     -WorkingDirectory $ProjectRoot
 $CollectorLogonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
 $CollectorLogonTrigger.Delay = 'PT30S'
-$CollectorDailyTrigger = New-ScheduledTaskTrigger -Daily -At '09:00'
+$CollectorDailyTrigger = New-ScheduledTaskTrigger -Daily -At '21:00'
 $CollectorSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
@@ -71,7 +71,7 @@ $CollectorSettings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 5) `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 $CollectorTask = New-ScheduledTask -Action $CollectorAction -Trigger @($CollectorLogonTrigger, $CollectorDailyTrigger) -Principal $Principal -Settings $CollectorSettings `
-    -Description 'Collect current Keylol Steam freebies at Windows logon and daily at 09:00 local time.'
+    -Description 'Collect current Keylol Steam freebies at Windows logon and daily at 21:00 local time.'
 
 if ($PSCmdlet.ShouldProcess("${TaskPath}ArchiSteamFarm", 'Register scheduled task')) {
     Register-ScheduledTask -TaskPath $TaskPath -TaskName 'ArchiSteamFarm' -InputObject $AsfTask -Force | Out-Null

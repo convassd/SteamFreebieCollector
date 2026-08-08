@@ -75,8 +75,10 @@ After tests, live dry-run, and read-only ASF health validation pass, register th
 
 This registers two triggers for each task:
 
-- ASF starts at logon and daily at 08:55 local time.
-- The collector starts 30 seconds after logon and daily at 09:00 local time.
+- ASF starts at logon and daily at 20:55 local time.
+- The collector starts 30 seconds after logon and daily at 21:00 local time.
+
+The operational day runs from 21:00 through the following 20:59:59. A daytime logon therefore belongs to the cycle that began at 21:00 on the preceding calendar day. Deduplication is persistent across all cycles, so logon catch-up runs never resubmit a recorded license.
 
 Both tasks use `StartWhenAvailable` and `WakeToRun`, so a sleeping PC can wake for the daily run and a missed start is attempted when Windows can run it. A powered-off PC cannot wake, but the next logon trigger provides the catch-up run. The collector task is deliberately disabled initially. Inspect it with:
 
