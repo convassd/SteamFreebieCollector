@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Protocol
 
 from .asf import AsfClient, AsfHealthError, SubmissionOutcome
+from .asf_lifecycle import AsfLifecycleManager
 from .eventlog import EventLogger
 from .models import (
     Availability,
@@ -44,6 +45,7 @@ class CollectorService:
         store: StateStore | None,
         health_wait_seconds: float = 120.0,
         health_poll_seconds: float = 2.0,
+        asf_lifecycle: AsfLifecycleManager | None = None,
     ) -> None:
         self.index_url = index_url
         self.fetcher = fetcher
@@ -52,6 +54,7 @@ class CollectorService:
         self.store = store
         self.health_wait_seconds = health_wait_seconds
         self.health_poll_seconds = health_poll_seconds
+        self.asf_lifecycle = asf_lifecycle
 
     def discover(self, run_id: str) -> DiscoveryResult:
         self.logger.emit("index_fetch_started", run_id=run_id, source_url=self.index_url)
@@ -135,14 +138,14 @@ class CollectorService:
             )
         return DiscoveryResult(candidates=tuple(candidates), issues=tuple(issues))
 
-    def run(self, mode: str) -> RunSummary:
+    def run(self, mode: str, *, run_id: str | None = None, scheduled: bool = False) -> RunSummary:
         if mode not in {"dry-run", "review", "automatic"}:
             raise ValueError(f"Unsupported run mode: {mode}")
         if mode != "dry-run" and self.store is None:
             raise RuntimeError("Persistent modes require a state store")
 
-        run_id = uuid.uuid4().hex
-        self.logger.emit("run_started", run_id=run_id, mode=mode, source_url=self.index_url)
+        run_id = run_id or uuid.uuid4().hex
+        self.logger.emit("run_started", run_id=run_id, mode=mode, scheduled=scheduled, source_url=self.index_url)
         try:
             result = self.discover(run_id)
         except Exception as error:
@@ -150,6 +153,7 @@ class CollectorService:
                 "run_failed",
                 run_id=run_id,
                 mode=mode,
+                scheduled=scheduled,
                 source_url=self.index_url,
                 error_category=type(error).__name__,
                 message=str(error),
@@ -167,7 +171,7 @@ class CollectorService:
                 skipped=0,
                 errors=sum(issue.code.endswith("_error") for issue in result.issues),
             )
-            self.logger.emit("run_completed", **asdict(summary))
+            self.logger.emit("run_completed", scheduled=scheduled, **asdict(summary))
             return summary
 
         assert self.store is not None
@@ -188,7 +192,13 @@ class CollectorService:
                 continue
             seen_record_ids.add(record.id)
 
-            if mode == "automatic" and candidate.availability is Availability.CURRENT and record.status == CandidateStatus.PENDING.value:
+            retryable_statuses = {CandidateStatus.PENDING.value}
+            if scheduled:
+                # A definite scheduled failure keeps the cycle incomplete and is
+                # retried by Task Scheduler/logon. Unknown POST outcomes remain
+                # suppressed because replaying them could duplicate a claim.
+                retryable_statuses.add(CandidateStatus.FAILED.value)
+            if mode == "automatic" and candidate.availability is Availability.CURRENT and record.status in retryable_statuses:
                 records_to_submit.append(record)
             elif record.status in {CandidateStatus.SUBMITTED.value, CandidateStatus.REJECTED.value, CandidateStatus.UNKNOWN.value}:
                 skipped += 1
@@ -206,7 +216,7 @@ class CollectorService:
             skipped=skipped,
             errors=submit_errors + sum(issue.code.endswith("_error") for issue in result.issues),
         )
-        self.logger.emit("run_completed", **asdict(summary))
+        self.logger.emit("run_completed", scheduled=scheduled, **asdict(summary))
         return summary
 
     def approve(self, candidate_ids: list[int] | None = None) -> RunSummary:
@@ -261,7 +271,10 @@ class CollectorService:
             return 0, 0
         store = self._require_store()
         try:
-            self.asf_client.wait_until_healthy(self.health_wait_seconds, self.health_poll_seconds)
+            if self.asf_lifecycle is not None:
+                self.asf_lifecycle.ensure_available()
+            else:
+                self.asf_client.wait_until_healthy(self.health_wait_seconds, self.health_poll_seconds)
         except AsfHealthError as error:
             for record in records:
                 store.record_attempt(

@@ -1,3 +1,7 @@
+from datetime import UTC, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 from steam_freebie_collector.models import Availability, CandidateStatus, DiscoveryCandidate, LicenseIdentifier
 from steam_freebie_collector.storage import StateStore
 
@@ -54,3 +58,61 @@ def test_list_candidates_filters_status(tmp_path):
     records = store.list_candidates((CandidateStatus.PENDING.value,))
     assert [record.id for record in records] == [pending.id]
 
+
+def test_two_simultaneous_cycle_attempts_acquire_only_one_lease(tmp_path):
+    path = tmp_path / "state.sqlite3"
+    StateStore(path)
+    barrier = Barrier(2)
+
+    def acquire(owner):
+        store = StateStore(path)
+        barrier.wait()
+        return store.acquire_cycle_lease(
+            cycle_id="2026-08-20",
+            cycle_start_local="2026-08-20T21:00:00+08:00",
+            lease_owner=owner,
+            lease_timeout_seconds=900,
+            now_utc=datetime(2026, 8, 20, 13, 0, tzinfo=UTC),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(acquire, ("one", "two")))
+
+    assert sum(result.acquired for result in results) == 1
+    assert {result.reason for result in results} == {"lease_acquired", "cycle_in_progress"}
+
+
+def test_stale_cycle_lease_is_recovered(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    old = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    first = store.acquire_cycle_lease(
+        cycle_id="2026-08-20",
+        cycle_start_local="2026-08-20T21:00:00+08:00",
+        lease_owner="crashed",
+        lease_timeout_seconds=60,
+        now_utc=old,
+    )
+    recovered = store.acquire_cycle_lease(
+        cycle_id="2026-08-20",
+        cycle_start_local="2026-08-20T21:00:00+08:00",
+        lease_owner="retry",
+        lease_timeout_seconds=60,
+        now_utc=old + timedelta(minutes=2),
+    )
+    assert first.acquired
+    assert recovered.acquired
+    assert recovered.reason == "stale_lease_recovered"
+    assert recovered.stale_lease_recovered
+
+
+def test_failed_lease_release_remains_eligible(tmp_path):
+    store = StateStore(tmp_path / "state.sqlite3")
+    values = dict(
+        cycle_id="2026-08-20",
+        cycle_start_local="2026-08-20T21:00:00+08:00",
+        lease_timeout_seconds=900,
+        now_utc=datetime(2026, 8, 20, 13, 0, tzinfo=UTC),
+    )
+    assert store.acquire_cycle_lease(lease_owner="failed", **values).acquired
+    store.release_cycle_lease(cycle_id="2026-08-20", lease_owner="failed", error="boom")
+    assert store.acquire_cycle_lease(lease_owner="retry", **values).acquired

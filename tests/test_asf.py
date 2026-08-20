@@ -84,6 +84,13 @@ def test_submit_rejects_noncanonical_command_before_network():
     assert not session.posts
 
 
+def test_lifecycle_exit_uses_fixed_literal_command():
+    session = FakeSession(post_response=FakeResponse(payload={"Success": True}))
+    client = AsfClient("http://localhost:1242", session=session)
+    client.request_exit()
+    assert session.posts[0][1]["json"] == {"Command": "!exit"}
+
+
 @pytest.mark.parametrize(
     ("error", "outcome"),
     [
@@ -101,4 +108,3 @@ def test_malformed_success_response_is_unknown():
     response = FakeResponse(payload=ValueError("bad json"), text="not-json")
     client = AsfClient("http://localhost:1242", session=FakeSession(post_response=response))
     assert client.submit("!ALA a/1").outcome is SubmissionOutcome.UNKNOWN
-

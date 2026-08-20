@@ -18,6 +18,10 @@ class AppConfig:
     asf_base_url: str
     asf_health_wait_seconds: float
     asf_health_poll_seconds: float
+    asf_executable_path: Path
+    asf_working_directory: Path
+    asf_shutdown_wait_seconds: float
+    cycle_lease_timeout_seconds: float
     database_path: Path
     logs_path: Path
 
@@ -36,6 +40,7 @@ def load_config(path: Path | str | None = None) -> AppConfig:
 
     keylol = raw.get("keylol", {})
     asf = raw.get("asf", {})
+    scheduled = raw.get("scheduled", {})
     storage = raw.get("storage", {})
 
     return AppConfig(
@@ -47,6 +52,10 @@ def load_config(path: Path | str | None = None) -> AppConfig:
         asf_base_url=str(asf.get("base_url", "http://localhost:1242")).rstrip("/"),
         asf_health_wait_seconds=float(asf.get("health_wait_seconds", 120.0)),
         asf_health_poll_seconds=float(asf.get("health_poll_seconds", 2.0)),
+        asf_executable_path=Path(str(asf.get("executable", "E:/download/ASF-win-x64/ArchiSteamFarm.exe"))),
+        asf_working_directory=Path(str(asf.get("working_directory", "E:/download/ASF-win-x64"))),
+        asf_shutdown_wait_seconds=float(asf.get("shutdown_wait_seconds", 30.0)),
+        cycle_lease_timeout_seconds=float(scheduled.get("cycle_lease_timeout_seconds", 900.0)),
         database_path=_resolve_project_path(project_root, str(storage.get("database", "data/collector.sqlite3"))),
         logs_path=_resolve_project_path(project_root, str(storage.get("logs", "logs"))),
     )

@@ -22,7 +22,7 @@ class ParseError(RuntimeError):
 
 _THREAD_PATH_RE = re.compile(r"^/t(?P<thread_id>[1-9]\d*)-\d+-\d+/?$")
 _COMMAND_RE = re.compile(r"^\s*!(?P<command>ALA|AL|ADDLICENSE|ADDLICENCE)\b(?P<args>.*)$", re.IGNORECASE)
-_IDENTIFIER_RE = re.compile(r"^(?P<kind>a|app|s|sub)/(?P<value>[1-9]\d*)$", re.IGNORECASE)
+_IDENTIFIER_RE = re.compile(r"^(?:(?P<kind>a|app|s|sub)/)?(?P<value>[1-9]\d*)$", re.IGNORECASE)
 _CANONICAL_COMMAND_RE = re.compile(r"^!ALA [as]/[1-9]\d*$")
 _NEGATIVE_AVAILABILITY_MARKERS = (
     "预告",
@@ -164,8 +164,11 @@ def parse_add_license_command(line: str) -> tuple[LicenseIdentifier, ...] | None
         identifier_match = _IDENTIFIER_RE.fullmatch(token)
         if not identifier_match:
             return None
-        raw_kind = identifier_match.group("kind").lower()
-        kind = "app" if raw_kind in {"a", "app"} else "sub"
+        raw_kind = identifier_match.group("kind")
+        # ASF's backwards-compatible syntax treats every independently bare
+        # numeric license ID as a sub ID. It does not inherit a prior token's
+        # explicit app/sub type.
+        kind = "app" if raw_kind is not None and raw_kind.lower() in {"a", "app"} else "sub"
         value = int(identifier_match.group("value"))
         key = (kind, value)
         if key not in seen:

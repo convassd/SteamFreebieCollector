@@ -35,6 +35,15 @@ $Database = Join-Path $ProjectRoot 'data\collector.sqlite3'
 $Logs = Join-Path $ProjectRoot 'logs'
 Write-Output "Database: $Database (exists: $(Test-Path -LiteralPath $Database))"
 Write-Output "Logs: $Logs (exists: $(Test-Path -LiteralPath $Logs))"
+if (Test-Path -LiteralPath $Database) {
+    $PythonExe = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $PythonExe) {
+        & $PythonExe -m steam_freebie_collector cycle list --limit 5
+    }
+}
+
+$LegacyAsfTask = Get-ScheduledTask -TaskPath $TaskPath -TaskName 'ArchiSteamFarm' -ErrorAction SilentlyContinue
+Write-Output "Legacy standalone ASF task present: $($null -ne $LegacyAsfTask)"
 
 if ($CheckAsf) {
     $Headers = @{}

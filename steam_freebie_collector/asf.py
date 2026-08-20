@@ -57,6 +57,25 @@ class AsfClient:
             headers["Authentication"] = self.ipc_password
         return headers
 
+    def is_healthy(self) -> bool:
+        assert self.session is not None
+        try:
+            response = self.session.get(
+                f"{self.base_url}/Api/ASF",
+                headers=self._headers(),
+                timeout=(self.connect_timeout, min(self.read_timeout, 5.0)),
+            )
+        except requests.RequestException:
+            return False
+        if response.status_code in {401, 403}:
+            raise AsfAuthenticationError(f"ASF IPC authentication failed with HTTP {response.status_code}")
+        if not response.ok:
+            return False
+        try:
+            return response.json().get("Success") is True
+        except ValueError:
+            return False
+
     def wait_until_healthy(self, wait_seconds: float, poll_seconds: float) -> None:
         assert self.session is not None
         deadline = self.monotonic() + max(0.0, wait_seconds)
@@ -148,6 +167,30 @@ class AsfClient:
             duration_ms=duration_ms,
         )
 
+    def request_exit(self) -> None:
+        """Request ASF shutdown with a fixed lifecycle-only command.
+
+        This method intentionally accepts no command argument and is separate from
+        the strict webpage-derived add-license submission path.
+        """
+        assert self.session is not None
+        try:
+            response = self.session.post(
+                f"{self.base_url}/Api/Command",
+                headers={**self._headers(), "Content-Type": "application/json"},
+                json={"Command": "!exit"},
+                timeout=(self.connect_timeout, min(self.read_timeout, 10.0)),
+            )
+            if response.status_code in {401, 403}:
+                raise AsfAuthenticationError(f"ASF IPC authentication failed with HTTP {response.status_code}")
+        except AsfAuthenticationError:
+            raise
+        except requests.RequestException:
+            # ASF can close IPC while the shutdown response is in flight. The
+            # lifecycle manager verifies the exact owned process actually exits.
+            return
+
+
     def _error_result(
         self,
         started: float,
@@ -163,4 +206,3 @@ class AsfClient:
             error_category=type(error).__name__,
             duration_ms=round((self.monotonic() - started) * 1000),
         )
-

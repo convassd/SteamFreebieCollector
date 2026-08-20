@@ -35,6 +35,9 @@ Then perform a live read-only scrape. Dry-run creates a JSONL run log but does n
 # Automatically submit only new entries explicitly marked currently claimable
 .\.venv\Scripts\python.exe -m steam_freebie_collector run --mode automatic
 
+# One-off end-to-end deployment validation (bypasses only the cycle guard)
+.\.venv\Scripts\python.exe -m steam_freebie_collector run --mode automatic --validate-once
+
 # Review state
 .\.venv\Scripts\python.exe -m steam_freebie_collector review list
 .\.venv\Scripts\python.exe -m steam_freebie_collector review approve 1
@@ -59,10 +62,12 @@ For persistent unattended use, set the environment variable through an appropria
 ## State and safety
 
 - `data\collector.sqlite3` is the deduplication and attempt-history database.
+- SQLite also owns the atomic per-cycle lease. A successful scheduled run marks its `YYYY-MM-DD` cycle completed; failures release the lease for a same-cycle retry.
 - `logs\collector-YYYY-MM-DD.jsonl` is the append-only structured log.
 - Dry-run does not create or change the database.
 - An uncertain POST result is marked `unknown` and is never retried automatically.
 - Only canonical single-license commands matching `!ALA a/<id>` or `!ALA s/<id>` can reach the IPC client.
+- Authored add-license arguments may use ASF's typed forms (`a/`, `app/`, `s/`, `sub/`) or a positive bare ID; every bare ID is normalized independently as `sub`, and raw webpage commands are never forwarded.
 - Generic commands embedded in Keylol Steam widget JavaScript are ignored.
 
 ## Task Scheduler
@@ -73,14 +78,21 @@ After tests, live dry-run, and read-only ASF health validation pass, register th
 .\scripts\Register-Tasks.ps1
 ```
 
-This registers two triggers for each task:
+This registers one Collector task with two triggers:
 
-- ASF starts at logon and daily at 20:55 local time.
 - The collector starts 30 seconds after logon and daily at 21:00 local time.
 
-The operational day runs from 21:00 through the following 20:59:59. A daytime logon therefore belongs to the cycle that began at 21:00 on the preceding calendar day. Deduplication is persistent across all cycles, so logon catch-up runs never resubmit a recorded license.
+The operational day runs from 21:00 through the following 20:59:59. A daytime logon therefore belongs to the cycle that began at 21:00 on the preceding calendar day. The scheduled command is:
 
-Both tasks use `StartWhenAvailable` and `WakeToRun`, so a sleeping PC can wake for the daily run and a missed start is attempted when Windows can run it. A powered-off PC cannot wake, but the next logon trigger provides the catch-up run. The collector task is deliberately disabled initially. Inspect it with:
+```powershell
+.\.venv\Scripts\python.exe -m steam_freebie_collector run --mode automatic --scheduled
+```
+
+It acquires an atomic SQLite lease before any Keylol or ASF access. A later trigger in a successfully completed cycle logs `cycle_already_completed` and exits without fetching the site or starting ASF. Failed runs release the lease, and a stale lease from a crashed process can be recovered after the configured timeout.
+
+ASF is no longer a standalone scheduled process. When a scheduled run has a new command to submit, the collector first checks IPC. It starts the configured ASF executable only if needed, remembers that exact process, and requests graceful shutdown afterward. A pre-existing/manual ASF instance is left running. The lifecycle-only `!exit` request is fixed in code and is isolated from the strict webpage-command allowlist.
+
+The task uses `StartWhenAvailable`, `WakeToRun`, failure retries, and `MultipleInstances IgnoreNew`. A powered-off PC cannot wake, but the next logon trigger provides the catch-up run. Registration is idempotent and removes the legacy `ArchiSteamFarm` scheduled task if present. The collector task is deliberately disabled initially unless `-EnableCollector` is supplied. Inspect it with:
 
 ```powershell
 .\scripts\Get-TaskStatus.ps1 -CheckAsf
@@ -97,3 +109,7 @@ Remove both tasks with:
 ```powershell
 .\scripts\Unregister-Tasks.ps1
 ```
+
+`Unregister-Tasks.ps1` also removes the legacy standalone ASF task if an older installation still has it. Manual `dry-run`, `review`, `automatic`, approval, retry, history, health, and cycle diagnostic commands do not use the scheduled cycle guard.
+
+`--validate-once` is an explicit deployment check. It starts and verifies ASF before fetching Keylol, then performs ordinary automatic processing with the same strict command validation and persistent license deduplication. It never reads or writes operational-cycle records, so it cannot consume or suppress a 21:00 run. It shuts down only an ASF process that it started; a pre-existing ASF instance remains running.

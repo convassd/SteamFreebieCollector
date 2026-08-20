@@ -73,6 +73,34 @@ def test_detail_accepts_only_allowlisted_full_lines_and_deduplicates(fixture_tex
     assert "!ALA s/78; !update" in rejected
 
 
+def test_detail_accepts_real_world_mixed_typed_and_bare_line(fixture_text):
+    result = parse_detail(fixture_text("bare_id_detail.html"), "https://keylol.com/t1047211-1-1", 1047211)
+    assert [item.identifier.normalized for item in result.licenses] == ["sub/1613629", "sub/1741253"]
+    assert [item.normalized_command for item in result.licenses] == ["!ALA s/1613629", "!ALA s/1741253"]
+    assert not [issue for issue in result.issues if issue.code in {"unsupported_command", "missing_supported_command"}]
+
+
+@pytest.mark.parametrize(
+    ("line", "expected_identifiers", "expected_commands"),
+    [
+        ("!ALA s/1613629, 1741253", ["sub/1613629", "sub/1741253"], ["!ALA s/1613629", "!ALA s/1741253"]),
+        ("!ALA 1741253", ["sub/1741253"], ["!ALA s/1741253"]),
+        ("!ALA a/123, 456", ["app/123", "sub/456"], ["!ALA a/123", "!ALA s/456"]),
+    ],
+)
+def test_command_parser_accepts_asf_bare_sub_syntax(line, expected_identifiers, expected_commands):
+    identifiers = parse_add_license_command(line)
+    assert identifiers is not None
+    assert [identifier.normalized for identifier in identifiers] == expected_identifiers
+    assert [f"!ALA {identifier.asf_token}" for identifier in identifiers] == expected_commands
+
+
+def test_typed_and_bare_sub_representations_are_semantically_deduplicated():
+    identifiers = parse_add_license_command("!ALA s/1741253, 1741253 sub/1741253")
+    assert identifiers is not None
+    assert [identifier.normalized for identifier in identifiers] == ["sub/1741253"]
+
+
 def test_missing_authored_command_is_flagged(fixture_text):
     result = parse_detail(fixture_text("missing_detail.html"), "https://keylol.com/t3-1-1", 3)
     assert not result.licenses
@@ -85,10 +113,12 @@ def test_missing_authored_command_is_flagged(fixture_text):
         "!ALA s/1; !exit",
         "!addlicense OtherBot s/1",
         "!update",
-        "!ALA 123",
         "!ALA s/0",
         "!ALA s/-1",
         "!ALA s/1 extra",
+        "!ALA s/1, invalid",
+        "!ALA 123, --option",
+        "!ALA a/123, 456; !exit",
     ],
 )
 def test_command_parser_rejects_unsafe_or_ambiguous_lines(line):

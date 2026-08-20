@@ -11,7 +11,9 @@ from .eventlog import EventLogger
 from .http_client import KeylolClient
 from .models import CandidateStatus
 from .service import CollectorService, RunSummary
+from .scheduled import execute_scheduled_run
 from .storage import StateStore
+from .validation import execute_one_off_validation
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +26,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subcommands.add_parser("run", help="Fetch and process the Keylol index")
     run_parser.add_argument("--mode", required=True, choices=("dry-run", "review", "automatic"))
+    run_parser.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="Apply the persistent operational-cycle guard and per-run ASF lifecycle (automatic mode only)",
+    )
+    run_parser.add_argument(
+        "--validate-once",
+        action="store_true",
+        help="Run one end-to-end automatic validation without reading or changing operational-cycle state",
+    )
 
     review_parser = subcommands.add_parser("review", help="Manage persisted candidates")
     review_commands = review_parser.add_subparsers(dest="review_operation", required=True)
@@ -37,6 +49,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     history_parser = subcommands.add_parser("history", help="Show recent ASF attempts")
     history_parser.add_argument("--limit", type=int, default=20)
+    cycle_parser = subcommands.add_parser("cycle", help="Inspect or explicitly seed operational-cycle state")
+    cycle_commands = cycle_parser.add_subparsers(dest="cycle_operation", required=True)
+    cycle_list = cycle_commands.add_parser("list", help="List recent operational cycles")
+    cycle_list.add_argument("--limit", type=int, default=20)
+    cycle_seed = cycle_commands.add_parser("seed-completed", help="Mark a proven historical cycle completed")
+    cycle_seed.add_argument("--cycle-id", required=True)
+    cycle_seed.add_argument("--cycle-start-local", required=True)
+    cycle_seed.add_argument("--source", required=True)
     subcommands.add_parser("health", help="Perform a read-only ASF IPC health check")
     return parser
 
@@ -102,6 +122,48 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
 
         if args.operation == "run":
+            if (args.scheduled or args.validate_once) and args.mode != "automatic":
+                raise ValueError("--scheduled and --validate-once are supported only with --mode automatic")
+            if args.scheduled and args.validate_once:
+                raise ValueError("--scheduled and --validate-once cannot be combined")
+            if args.validate_once:
+                fetcher = KeylolClient(
+                    connect_timeout=config.connect_timeout_seconds,
+                    read_timeout=config.read_timeout_seconds,
+                    retry_count=config.get_retry_count,
+                )
+                asf_client = AsfClient(
+                    base_url=config.asf_base_url,
+                    ipc_password=os.environ.get("STEAM_FREEBIE_ASF_IPC_PASSWORD"),
+                )
+                summary = execute_one_off_validation(
+                    config=config,
+                    fetcher=fetcher,
+                    asf_client=asf_client,
+                    store=StateStore(config.database_path),
+                    logger=EventLogger(config.logs_path),
+                )
+                _print_summary(summary)
+                return 2 if summary.errors else 0
+            if args.scheduled:
+                fetcher = KeylolClient(
+                    connect_timeout=config.connect_timeout_seconds,
+                    read_timeout=config.read_timeout_seconds,
+                    retry_count=config.get_retry_count,
+                )
+                asf_client = AsfClient(
+                    base_url=config.asf_base_url,
+                    ipc_password=os.environ.get("STEAM_FREEBIE_ASF_IPC_PASSWORD"),
+                )
+                summary = execute_scheduled_run(
+                    config=config,
+                    fetcher=fetcher,
+                    asf_client=asf_client,
+                    store=StateStore(config.database_path),
+                    logger=EventLogger(config.logs_path),
+                )
+                _print_summary(summary)
+                return 2 if summary.errors else 0
             service = _build_service(config, with_store=args.mode != "dry-run")
             summary = service.run(args.mode)
             _print_summary(summary)
@@ -114,6 +176,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         store = StateStore(config.database_path)
+        if args.operation == "cycle":
+            if args.cycle_operation == "list":
+                for record in store.list_cycles(limit=max(1, args.limit)):
+                    print(
+                        f"{record.cycle_id}: {record.state} start={record.cycle_start_local} "
+                        f"owner={record.lease_owner or ''} completed={record.completed_utc or ''} "
+                        f"source={record.completion_source or ''}"
+                    )
+                return 0
+            store.seed_completed_cycle(
+                cycle_id=args.cycle_id,
+                cycle_start_local=args.cycle_start_local,
+                source=args.source,
+            )
+            print(f"Seeded completed cycle {args.cycle_id} from {args.source}.")
+            return 0
         if args.operation == "history":
             _print_history(store, args.limit)
             return 0

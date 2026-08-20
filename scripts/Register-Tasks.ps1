@@ -39,24 +39,9 @@ try {
 
 $Principal = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Limited
 
-$AsfAction = New-ScheduledTaskAction -Execute $AsfExe -WorkingDirectory $AsfRoot
-$AsfLogonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
-$AsfDailyTrigger = New-ScheduledTaskTrigger -Daily -At '20:55'
-$AsfSettings = New-ScheduledTaskSettingsSet `
-    -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable `
-    -WakeToRun `
-    -MultipleInstances IgnoreNew `
-    -RestartCount 3 `
-    -RestartInterval (New-TimeSpan -Minutes 1) `
-    -ExecutionTimeLimit ([TimeSpan]::Zero)
-$AsfTask = New-ScheduledTask -Action $AsfAction -Trigger @($AsfLogonTrigger, $AsfDailyTrigger) -Principal $Principal -Settings $AsfSettings `
-    -Description 'Start ArchiSteamFarm at Windows logon and daily at 20:55 before SteamFreebieCollector.'
-
 $CollectorAction = New-ScheduledTaskAction `
     -Execute $PythonExe `
-    -Argument '-m steam_freebie_collector run --mode automatic' `
+    -Argument '-m steam_freebie_collector run --mode automatic --scheduled' `
     -WorkingDirectory $ProjectRoot
 $CollectorLogonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
 $CollectorLogonTrigger.Delay = 'PT30S'
@@ -71,10 +56,11 @@ $CollectorSettings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 5) `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 $CollectorTask = New-ScheduledTask -Action $CollectorAction -Trigger @($CollectorLogonTrigger, $CollectorDailyTrigger) -Principal $Principal -Settings $CollectorSettings `
-    -Description 'Collect current Keylol Steam freebies at Windows logon and daily at 21:00 local time.'
+    -Description 'Run one guarded Steam freebie collection per 21:00 operational cycle, managing ASF only when needed.'
 
-if ($PSCmdlet.ShouldProcess("${TaskPath}ArchiSteamFarm", 'Register scheduled task')) {
-    Register-ScheduledTask -TaskPath $TaskPath -TaskName 'ArchiSteamFarm' -InputObject $AsfTask -Force | Out-Null
+$LegacyAsfTask = Get-ScheduledTask -TaskPath $TaskPath -TaskName 'ArchiSteamFarm' -ErrorAction SilentlyContinue
+if ($null -ne $LegacyAsfTask -and $PSCmdlet.ShouldProcess("${TaskPath}ArchiSteamFarm", 'Remove legacy standalone ASF task')) {
+    Unregister-ScheduledTask -TaskPath $TaskPath -TaskName 'ArchiSteamFarm' -Confirm:$false
 }
 if ($PSCmdlet.ShouldProcess("${TaskPath}Collector", 'Register scheduled task')) {
     Register-ScheduledTask -TaskPath $TaskPath -TaskName 'Collector' -InputObject $CollectorTask -Force | Out-Null
@@ -88,9 +74,8 @@ if ($WhatIfPreference) {
     return
 }
 
-Write-Output "Registered ${TaskPath}ArchiSteamFarm"
 if ($EnableCollector) {
-    Write-Output "Registered and enabled ${TaskPath}Collector"
+    Write-Output "Registered and enabled ${TaskPath}Collector; legacy ASF task is absent."
 } else {
-    Write-Output "Registered ${TaskPath}Collector in DISABLED state; enable it only after validation."
+    Write-Output "Registered ${TaskPath}Collector in DISABLED state; legacy ASF task is absent."
 }

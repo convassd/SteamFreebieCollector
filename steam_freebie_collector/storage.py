@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,28 @@ class AttemptRecord:
     response_result: str | None
     error_category: str | None
     duration_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class CycleLeaseDecision:
+    acquired: bool
+    reason: str
+    cycle_id: str
+    cycle_start_local: str
+    lease_owner: str | None
+    stale_lease_recovered: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RunCycleRecord:
+    cycle_id: str
+    cycle_start_local: str
+    state: str
+    lease_owner: str | None
+    lease_acquired_utc: str | None
+    completed_utc: str | None
+    completion_source: str | None
+    last_error: str | None
 
 
 class StateStore:
@@ -107,11 +130,163 @@ class StateStore:
                     raw_value TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS run_cycles (
+                    cycle_id TEXT PRIMARY KEY,
+                    cycle_start_local TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('in_progress', 'completed')),
+                    lease_owner TEXT,
+                    lease_acquired_utc TEXT,
+                    completed_utc TEXT,
+                    completion_source TEXT,
+                    last_error TEXT
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidates(status);
                 CREATE INDEX IF NOT EXISTS idx_attempts_candidate ON attempts(candidate_id, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_issues_run ON issues(run_id, id);
+                CREATE INDEX IF NOT EXISTS idx_run_cycles_state ON run_cycles(state);
                 """
             )
+
+    @staticmethod
+    def _utc_text(value: datetime) -> str:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("UTC timestamp must be timezone-aware")
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    @staticmethod
+    def _parse_utc(value: str) -> datetime:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+
+    def acquire_cycle_lease(
+        self,
+        *,
+        cycle_id: str,
+        cycle_start_local: str,
+        lease_owner: str,
+        lease_timeout_seconds: float,
+        now_utc: datetime | None = None,
+    ) -> CycleLeaseDecision:
+        now = now_utc or datetime.now(UTC)
+        now_text = self._utc_text(now)
+        stale_before = now - timedelta(seconds=max(1.0, lease_timeout_seconds))
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM run_cycles WHERE cycle_id = ?", (cycle_id,)).fetchone()
+            if row is None:
+                connection.execute(
+                    """
+                    INSERT INTO run_cycles (
+                        cycle_id, cycle_start_local, state, lease_owner, lease_acquired_utc,
+                        completed_utc, completion_source, last_error
+                    ) VALUES (?, ?, 'in_progress', ?, ?, NULL, NULL, NULL)
+                    """,
+                    (cycle_id, cycle_start_local, lease_owner, now_text),
+                )
+                connection.commit()
+                return CycleLeaseDecision(True, "lease_acquired", cycle_id, cycle_start_local, lease_owner)
+
+            if row["state"] == "completed":
+                connection.commit()
+                return CycleLeaseDecision(False, "cycle_already_completed", cycle_id, row["cycle_start_local"], None)
+
+            acquired_at = self._parse_utc(row["lease_acquired_utc"])
+            if acquired_at > stale_before:
+                connection.commit()
+                return CycleLeaseDecision(False, "cycle_in_progress", cycle_id, row["cycle_start_local"], row["lease_owner"])
+
+            previous_owner = row["lease_owner"]
+            connection.execute(
+                """
+                UPDATE run_cycles
+                SET cycle_start_local = ?, lease_owner = ?, lease_acquired_utc = ?,
+                    completed_utc = NULL, completion_source = NULL,
+                    last_error = ?
+                WHERE cycle_id = ? AND state = 'in_progress'
+                """,
+                (cycle_start_local, lease_owner, now_text, f"Recovered stale lease from {previous_owner}", cycle_id),
+            )
+            connection.commit()
+            return CycleLeaseDecision(
+                True,
+                "stale_lease_recovered",
+                cycle_id,
+                cycle_start_local,
+                lease_owner,
+                stale_lease_recovered=True,
+            )
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def complete_cycle(
+        self,
+        *,
+        cycle_id: str,
+        lease_owner: str,
+        source: str = "scheduled_run",
+        now_utc: datetime | None = None,
+    ) -> None:
+        completed = self._utc_text(now_utc or datetime.now(UTC))
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE run_cycles
+                SET state = 'completed', completed_utc = ?, completion_source = ?, last_error = NULL
+                WHERE cycle_id = ? AND state = 'in_progress' AND lease_owner = ?
+                """,
+                (completed, source, cycle_id, lease_owner),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(f"Cycle lease {cycle_id} is no longer owned by {lease_owner}")
+
+    def release_cycle_lease(self, *, cycle_id: str, lease_owner: str, error: str) -> None:
+        """Release a failed lease so another retry in the same cycle remains eligible."""
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM run_cycles WHERE cycle_id = ? AND state = 'in_progress' AND lease_owner = ?",
+                (cycle_id, lease_owner),
+            )
+
+    def seed_completed_cycle(
+        self,
+        *,
+        cycle_id: str,
+        cycle_start_local: str,
+        source: str,
+        now_utc: datetime | None = None,
+    ) -> None:
+        completed = self._utc_text(now_utc or datetime.now(UTC))
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO run_cycles (
+                    cycle_id, cycle_start_local, state, lease_owner, lease_acquired_utc,
+                    completed_utc, completion_source, last_error
+                ) VALUES (?, ?, 'completed', NULL, NULL, ?, ?, NULL)
+                ON CONFLICT(cycle_id) DO UPDATE SET
+                    cycle_start_local = excluded.cycle_start_local,
+                    state = 'completed', lease_owner = NULL, lease_acquired_utc = NULL,
+                    completed_utc = excluded.completed_utc,
+                    completion_source = excluded.completion_source,
+                    last_error = NULL
+                """,
+                (cycle_id, cycle_start_local, completed, source),
+            )
+
+    def get_cycle(self, cycle_id: str) -> RunCycleRecord | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM run_cycles WHERE cycle_id = ?", (cycle_id,)).fetchone()
+        return RunCycleRecord(**dict(row)) if row is not None else None
+
+    def list_cycles(self, limit: int = 20) -> tuple[RunCycleRecord, ...]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM run_cycles ORDER BY cycle_id DESC LIMIT ?", (limit,)).fetchall()
+        return tuple(RunCycleRecord(**dict(row)) for row in rows)
 
     @staticmethod
     def _candidate_from_row(row: sqlite3.Row) -> StoredCandidate:
