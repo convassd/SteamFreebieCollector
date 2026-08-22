@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 
 from steam_freebie_collector.asf import SubmissionOutcome, SubmissionResult
@@ -123,7 +124,7 @@ def test_automatic_queues_future_and_ambiguous(tmp_path, fixture_text):
     assert asf.commands == ["!ALA s/111"]
 
 
-def test_missing_command_is_recorded_without_submission(tmp_path, fixture_text):
+def test_widget_fallback_is_canonicalized_submitted_and_logged_with_safe_provenance(tmp_path, fixture_text):
     store = StateStore(tmp_path / "state.sqlite3")
     asf = FakeAsfClient()
     service = build_service(
@@ -131,6 +132,36 @@ def test_missing_command_is_recorded_without_submission(tmp_path, fixture_text):
         {
             INDEX_URL: fixture_text("current_index.html"),
             "https://keylol.com/t1045840-1-1": fixture_text("missing_detail.html"),
+        },
+        store=store,
+        asf=asf,
+    )
+    summary = service.run("automatic")
+    assert summary.discovered == 1
+    assert summary.issues == 0
+    assert asf.commands == ["!ALA a/123"]
+    record = store.list_candidates()[0]
+    assert record.raw_command == "widget_copy_fallback app/123"
+
+    logged = [
+        json.loads(line)
+        for path in (tmp_path / "logs").glob("*.jsonl")
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    discovered = next(event for event in logged if event["event"] == "candidate_discovered")
+    assert discovered["command_provenance"] == "widget_copy_fallback"
+    assert discovered["raw_command"] == "widget_copy_fallback app/123"
+    assert "setCopy" not in json.dumps(logged)
+
+
+def test_missing_command_is_recorded_without_submission(tmp_path, fixture_text):
+    store = StateStore(tmp_path / "state.sqlite3")
+    asf = FakeAsfClient()
+    service = build_service(
+        tmp_path,
+        {
+            INDEX_URL: fixture_text("current_index.html"),
+            "https://keylol.com/t1045840-1-1": fixture_text("no_supported_detail.html"),
         },
         store=store,
         asf=asf,

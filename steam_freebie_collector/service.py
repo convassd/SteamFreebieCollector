@@ -113,6 +113,7 @@ class CollectorService:
                     availability=entry.availability,
                     raw_command=license_item.raw_command,
                     identifier=license_item.identifier,
+                    provenance=license_item.provenance,
                 )
                 candidates.append(candidate)
                 self.logger.emit(
@@ -124,6 +125,7 @@ class CollectorService:
                     availability=candidate.availability.value,
                     raw_command=candidate.raw_command,
                     normalized_command=candidate.normalized_command,
+                    command_provenance=candidate.provenance,
                 )
 
         for issue in issues:

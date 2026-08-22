@@ -68,7 +68,7 @@ For persistent unattended use, set the environment variable through an appropria
 - An uncertain POST result is marked `unknown` and is never retried automatically.
 - Only canonical single-license commands matching `!ALA a/<id>` or `!ALA s/<id>` can reach the IPC client.
 - Authored add-license arguments may use ASF's typed forms (`a/`, `app/`, `s/`, `sub/`) or a positive bare ID; every bare ID is normalized independently as `sub`, and raw webpage commands are never forwarded.
-- Generic commands embedded in Keylol Steam widget JavaScript are ignored.
+- A narrowly recognized Keylol `复制ASF代码`/`複製ASF代碼` widget may supply an AppID only when the original post has no valid authored command. Its static href and fixed `setCopy` structure must agree; JavaScript is never executed or logged, and the result is rebuilt as a canonical `!ALA a/<id>` command.
 
 ## Task Scheduler
 
@@ -111,5 +111,13 @@ Remove both tasks with:
 ```
 
 `Unregister-Tasks.ps1` also removes the legacy standalone ASF task if an older installation still has it. Manual `dry-run`, `review`, `automatic`, approval, retry, history, health, and cycle diagnostic commands do not use the scheduled cycle guard.
+
+## One-off validation
+
+Run this exact command from the project directory in PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe -m steam_freebie_collector run --mode automatic --validate-once
+```
 
 `--validate-once` is an explicit deployment check. It starts and verifies ASF before fetching Keylol, then performs ordinary automatic processing with the same strict command validation and persistent license deduplication. It never reads or writes operational-cycle records, so it cannot consume or suppress a 21:00 run. It shuts down only an ASF process that it started; a pre-existing ASF instance remains running.

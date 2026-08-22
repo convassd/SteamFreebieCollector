@@ -52,6 +52,7 @@ class LicenseIdentifier:
 class ParsedLicense:
     raw_command: str
     identifier: LicenseIdentifier
+    provenance: str = "authored_blockcode"
 
     @property
     def normalized_command(self) -> str:
@@ -67,6 +68,7 @@ class DiscoveryCandidate:
     availability: Availability
     raw_command: str
     identifier: LicenseIdentifier
+    provenance: str = "authored_blockcode"
 
     @property
     def normalized_command(self) -> str:
@@ -92,4 +94,3 @@ class DetailParseResult:
 class DiscoveryResult:
     candidates: tuple[DiscoveryCandidate, ...]
     issues: tuple[DiscoveryIssue, ...]
-

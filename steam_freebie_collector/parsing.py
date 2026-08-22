@@ -24,6 +24,23 @@ _THREAD_PATH_RE = re.compile(r"^/t(?P<thread_id>[1-9]\d*)-\d+-\d+/?$")
 _COMMAND_RE = re.compile(r"^\s*!(?P<command>ALA|AL|ADDLICENSE|ADDLICENCE)\b(?P<args>.*)$", re.IGNORECASE)
 _IDENTIFIER_RE = re.compile(r"^(?:(?P<kind>a|app|s|sub)/)?(?P<value>[1-9]\d*)$", re.IGNORECASE)
 _CANONICAL_COMMAND_RE = re.compile(r"^!ALA [as]/[1-9]\d*$")
+_WIDGET_HREF_RE = re.compile(r"^#asf(?P<id>[1-9]\d*)$")
+_WIDGET_DIRECT_ONCLICK_RE = re.compile(
+    r"""^\s*(?:javascript:\s*)?setCopy\(\s*
+    (?P<command_quote>['\"])!addlicense[ ]asf[ ]a/(?P<id>[1-9]\d*)(?P=command_quote)
+    (?:\s*,\s*(?P<message_quote>['\"])[^'\"]*(?P=message_quote))?
+    \s*\)\s*;?\s*(?:return\s+false\s*;?)?\s*$""",
+    re.VERBOSE,
+)
+_WIDGET_CONCAT_ONCLICK_RE = re.compile(
+    r"""^\s*(?:javascript:\s*)?setCopy\(\s*
+    (?P<prefix_quote>['\"])!addlicense[ ]asf[ ]a/(?P=prefix_quote)\s*\+\s*
+    this\.href\.split\(\s*(?P<fragment_quote>['\"])\#asf(?P=fragment_quote)\s*\)\s*\[\s*1\s*\]
+    (?:\s*,\s*(?P<message_quote>['\"])[^'\"]*(?P=message_quote))?
+    \s*\)\s*;?\s*(?:return\s+false\s*;?)?\s*$""",
+    re.VERBOSE,
+)
+_WIDGET_LABELS = {"复制ASF代码", "複製ASF代碼"}
 _NEGATIVE_AVAILABILITY_MARKERS = (
     "预告",
     "預告",
@@ -182,6 +199,39 @@ def is_canonical_command(command: str) -> bool:
     return _CANONICAL_COMMAND_RE.fullmatch(command) is not None
 
 
+def _widget_fallback_identifiers(first_post: Tag) -> tuple[LicenseIdentifier, ...]:
+    identifiers: list[LicenseIdentifier] = []
+    seen: set[tuple[str, int]] = set()
+
+    for anchor in first_post.find_all("a"):
+        if normalize_text(anchor.get_text(" ", strip=True)) not in _WIDGET_LABELS:
+            continue
+
+        href = anchor.get("href")
+        onclick = anchor.get("onclick")
+        if not isinstance(href, str) or not isinstance(onclick, str):
+            continue
+
+        href_match = _WIDGET_HREF_RE.fullmatch(href.strip())
+        if href_match is None:
+            continue
+        href_id = int(href_match.group("id"))
+
+        direct_match = _WIDGET_DIRECT_ONCLICK_RE.fullmatch(onclick)
+        if direct_match is not None:
+            if int(direct_match.group("id")) != href_id:
+                continue
+        elif _WIDGET_CONCAT_ONCLICK_RE.fullmatch(onclick) is None:
+            continue
+
+        key = ("app", href_id)
+        if key not in seen:
+            seen.add(key)
+            identifiers.append(LicenseIdentifier(kind="app", value=href_id))
+
+    return tuple(identifiers)
+
+
 def parse_detail(html: str, source_url: str, thread_id: int) -> DetailParseResult:
     soup = BeautifulSoup(html, "html.parser")
     first_post = soup.select_one('td[id^="postmessage_"]')
@@ -216,10 +266,24 @@ def parse_detail(html: str, source_url: str, thread_id: int) -> DetailParseResul
                 parsed.append(ParsedLicense(raw_command=line, identifier=identifier))
 
     if not parsed:
+        for identifier in _widget_fallback_identifiers(first_post):
+            key = (identifier.kind, identifier.value)
+            if key in seen:
+                continue
+            seen.add(key)
+            parsed.append(
+                ParsedLicense(
+                    raw_command=f"widget_copy_fallback {identifier.normalized}",
+                    identifier=identifier,
+                    provenance="widget_copy_fallback",
+                )
+            )
+
+    if not parsed:
         issues.append(
             DiscoveryIssue(
                 code="missing_supported_command",
-                message="The original post has no supported authored add-license command",
+                message="The original post has no supported authored add-license command or recognized ASF-copy widget",
                 source_url=source_url,
                 thread_id=thread_id,
             )

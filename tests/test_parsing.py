@@ -61,6 +61,7 @@ def test_thread_url_requires_https_and_keylol():
 def test_detail_prefers_authored_code_and_ignores_widget(fixture_text):
     result = parse_detail(fixture_text("current_detail.html"), "https://keylol.com/t1045840-1-1", 1045840)
     assert [item.normalized_command for item in result.licenses] == ["!ALA s/1706211"]
+    assert [item.provenance for item in result.licenses] == ["authored_blockcode"]
     assert not result.issues
 
 
@@ -101,10 +102,81 @@ def test_typed_and_bare_sub_representations_are_semantically_deduplicated():
     assert [identifier.normalized for identifier in identifiers] == ["sub/1741253"]
 
 
-def test_missing_authored_command_is_flagged(fixture_text):
+def test_direct_literal_widget_is_used_when_authored_command_is_missing(fixture_text):
     result = parse_detail(fixture_text("missing_detail.html"), "https://keylol.com/t3-1-1", 3)
+    assert [item.normalized_command for item in result.licenses] == ["!ALA a/123"]
+    assert [item.provenance for item in result.licenses] == ["widget_copy_fallback"]
+    assert result.licenses[0].raw_command == "widget_copy_fallback app/123"
+    assert "setCopy" not in result.licenses[0].raw_command
+    assert not result.issues
+
+
+def test_concatenated_href_widget_is_used_as_fallback(fixture_text):
+    result = parse_detail(fixture_text("widget_concatenated_detail.html"), "https://keylol.com/t4-1-1", 4)
+    assert [item.normalized_command for item in result.licenses] == ["!ALA a/606150"]
+    assert [item.provenance for item in result.licenses] == ["widget_copy_fallback"]
+    assert not result.issues
+
+
+def test_missing_authored_command_and_widget_is_flagged(fixture_text):
+    result = parse_detail(fixture_text("no_supported_detail.html"), "https://keylol.com/t5-1-1", 5)
     assert not result.licenses
     assert [issue.code for issue in result.issues] == ["missing_supported_command"]
+
+
+def _detail_with_anchor(anchor: str, *, authored: str = "", outside: bool = False) -> str:
+    first_post_content = f'<div class="blockcode"><ol><li>{authored}</li></ol></div>' if authored else "<p>No command.</p>"
+    if not outside:
+        first_post_content += anchor
+        anchor = ""
+    return (
+        '<!doctype html><html><body><table>'
+        f'<tr><td id="postmessage_10">{first_post_content}</td></tr>'
+        f'<tr><td id="postmessage_11">{anchor}</td></tr>'
+        "</table></body></html>"
+    )
+
+
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        '<a href="#asf123" onclick="setCopy(\'!addlicense asf a/456\')">复制ASF代码</a>',
+        '<a href="#asf0" onclick="setCopy(\'!addlicense asf a/0\')">复制ASF代码</a>',
+        '<a href="#asf-1" onclick="setCopy(\'!addlicense asf a/-1\')">复制ASF代码</a>',
+        '<a href="#asfabc" onclick="setCopy(\'!addlicense asf a/123\')">复制ASF代码</a>',
+        '<a href="#asf123" onclick="setCopy(\'!exit\')">复制ASF代码</a>',
+        '<a href="#asf123" onclick="setCopy(\'!addlicense asf a/123; !exit\')">复制ASF代码</a>',
+        '<a href="#asf123" onclick="setCopy(\'!addlicense asf a/123\'">复制ASF代码</a>',
+        '<a href="https://example.com/#asf123" onclick="setCopy(\'!addlicense asf a/123\')">复制ASF代码</a>',
+    ],
+)
+def test_malformed_or_unrelated_widgets_are_rejected(anchor):
+    result = parse_detail(_detail_with_anchor(anchor), "https://keylol.com/t10-1-1", 10)
+    assert not result.licenses
+    assert [issue.code for issue in result.issues] == ["missing_supported_command"]
+
+
+def test_widget_like_element_outside_original_post_is_ignored():
+    anchor = '<a href="#asf123" onclick="setCopy(\'!addlicense asf a/123\')">复制ASF代码</a>'
+    result = parse_detail(_detail_with_anchor(anchor, outside=True), "https://keylol.com/t10-1-1", 10)
+    assert not result.licenses
+    assert [issue.code for issue in result.issues] == ["missing_supported_command"]
+
+
+def test_traditional_widget_label_is_accepted():
+    anchor = '<a href="#asf123" onclick="setCopy(\'!addlicense asf a/123\')">複製ASF代碼</a>'
+    result = parse_detail(_detail_with_anchor(anchor), "https://keylol.com/t10-1-1", 10)
+    assert [item.normalized_command for item in result.licenses] == ["!ALA a/123"]
+
+
+def test_widget_fallback_deduplicates_and_preserves_authored_issues():
+    anchors = (
+        '<a href="#asf123" onclick="setCopy(\'!addlicense asf a/123\')">复制ASF代码</a>'
+        '<a href="#asf123" onclick="javascript:setCopy(\'!addlicense asf a/\'+this.href.split(\'#asf\')[1]);return false;">复制ASF代码</a>'
+    )
+    result = parse_detail(_detail_with_anchor(anchors, authored="!exit"), "https://keylol.com/t10-1-1", 10)
+    assert [item.normalized_command for item in result.licenses] == ["!ALA a/123"]
+    assert [issue.code for issue in result.issues] == ["unsupported_command"]
 
 
 @pytest.mark.parametrize(
